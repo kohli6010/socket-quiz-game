@@ -3,7 +3,9 @@ import { QuestionModel } from '../models/question';
 import { redis } from '../redisClient';
 import { GameState } from '../models/game';
 import { HttpException } from '../exceptions/httpException';
+import { Service } from 'typedi';
 
+@Service()
 export class GameService {
   
   static async startGame(playerId: string) {

@@ -12,7 +12,7 @@ export class Question {
     @IsString()
     questionText!: string;
 
-    @prop({ required: true })
+    @prop({ required: true, type: () => [String] })
     @IsArray()
     options!: string[];
 
