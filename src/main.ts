@@ -1,8 +1,8 @@
 import  'reflect-metadata';
 import './config/dotenv.config';
-import app from './app';
+import server from './app';
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log("server started.")
 });

@@ -1,93 +1,199 @@
-import { GameModel } from '../models/game';
+import { Game, GameModel } from '../models/game';
 import { QuestionModel } from '../models/question';
 import { redis } from '../redisClient';
 import { GameState } from '../models/game';
 import { HttpException } from '../exceptions/httpException';
 import { Service } from 'typedi';
+import { Server, Socket } from 'socket.io';
 
 @Service()
 export class GameService {
-  
-  static async startGame(playerId: string) {
-    const waitingListKey = 'waitingList'; 
+  async startGame(playerId: string, socket: Socket, io: Server) {
+    const waitingListKey = 'waitingListMap'; 
 
-    const matchedPlayerId = await redis.lpop(waitingListKey); 
+    const availablePlayer = await redis.hkeys(waitingListKey);
 
-    if (matchedPlayerId) {
-      const game = await this.createGame(matchedPlayerId, playerId);
+    if (availablePlayer.length > 0) {
+      const matchedPlayerId = availablePlayer[0];
+      const matchedSocketId = await redis.hget(waitingListKey, matchedPlayerId);
+
+      await redis.hdel(waitingListKey, matchedPlayerId);
+
+      const game = await this.createGame(
+        matchedPlayerId,
+        playerId,
+        matchedSocketId,
+        socket.id
+      );
+
       return game;
     } else {
-      await redis.rpush(waitingListKey, playerId);
+      await redis.hset(waitingListKey, playerId, socket.id); 
       return { message: 'You are now in the waiting list' };
     }
   }
 
-  static async createGame(player1Id: string, player2Id: string) {
-    const questions = await QuestionModel.find(); 
+
+  async createGame(
+    player1Id: string,
+    player2Id: string,
+    player1SocketId: string,
+    player2SocketId: string
+  ) {
+    const questions = await QuestionModel.find();
+
     const game = new GameModel({
       player1Id,
       player2Id,
-      questions: questions.map(q => q._id.toString()),
+      player1SocketId,
+      player2SocketId,
+      questions: questions.map((q) => q._id.toString()),
       gameState: GameState.Active,
       player1Score: 0,
       player2Score: 0,
-      currentQuestion: 0
+      currentQuestion: 0,
+      hasPlayer1Answered: false,
+      hasPlayer2Answered: false,
+      lastAnsweredBy: -1
     });
-    await game.save();
+
+    try {
+      await game.save();
+    } catch(err) {
+      console.log(err)
+    }
     return game;
   }
 
-  static async sendQuestion(gameId: string, questionIndex: number) {
-    const game = await GameModel.findById(gameId);
-    if (!game) throw new HttpException(400, 'Game not found');
-    
-    if (game.gameState !== GameState.Active) {
-      throw new HttpException(400, 'Game is not active');
-    }
 
-    const question = await QuestionModel.findById(game.questions[questionIndex]);
-    return question;
+  async handlePlayerDisconnect(playerId: string, io: Server) {
+    const activeGames = await GameModel.find({
+      $or: [{ player1Id: playerId }, { player2Id: playerId }],
+      gameState: GameState.Active,
+    });
+
+    for (const game of activeGames) {
+      game.gameState = GameState.Finished;
+      const winner =
+        game.player1Id === playerId ? game.player2SocketId : game.player1SocketId;
+      await game.save();
+
+      const winnerSocket = io.sockets.sockets.get(winner);
+      if (winnerSocket) {
+        winnerSocket.emit('game:end', { winner, reason: 'Player disconnected' });
+      }
+    }
   }
 
-  static async submitAnswer(gameId: string, playerId: string, answer: string) {
+  async sendQuestion(game: Game, io: Server) {
+    const question = await QuestionModel.findById(
+      game.questions[game.currentQuestion]
+    );
+  
+    if (!question) {
+      throw new Error(`Question not found for index ${game.currentQuestion}`);
+    }
+  
+    const player1Socket = io.sockets.sockets.get(game.player1SocketId);
+    const player2Socket = io.sockets.sockets.get(game.player2SocketId);
+  
+    if (player1Socket) {
+      player1Socket.emit('question:send', {
+        question: question.questionText,
+        options: question.options,
+        questionIndex: game.currentQuestion,
+      });
+    }
+  
+    if (player2Socket) {
+      player2Socket.emit('question:send', {
+        question: question.questionText,
+        options: question.options,
+        questionIndex: game.currentQuestion,
+      });
+    }
+  }
+
+  async submitAnswer(gameId: string, playerId: string, answer: string, io: Server) {
     const game = await GameModel.findById(gameId);
     if (!game) throw new HttpException(400, 'Game not found');
-
+  
     if (game.gameState !== GameState.Active) {
       throw new HttpException(400, 'Game is not active');
     }
-    
-    const question = await QuestionModel.findById(game.questions[game.currentQuestion]);
+  
+    const question = await QuestionModel.findById(
+      game.questions[game.currentQuestion]
+    );
+  
+    if (!question) {
+      throw new HttpException(400, 'Question not found');
+    }
+  
     const isCorrect = answer === question.correctAnswer;
-
+  
     if (playerId === game.player1Id) {
       if (isCorrect) game.player1Score++;
-    } else {
+      game.hasPlayer1Answered = true;
+      game.lastAnsweredBy = 1;
+    } else if (playerId === game.player2Id) {
       if (isCorrect) game.player2Score++;
+      game.hasPlayer2Answered = true;
+      game.lastAnsweredBy = 2;
     }
-
-    game.currentQuestion++;
-
-    if (game.currentQuestion >= game.questions.length) {
-      game.gameState = GameState.Finished; 
-      await game.save();
-      return { gameEnded: true, winner: game.player1Score > game.player2Score ? 'Player 1' : 'Player 2' };
+  
+    if (game.hasPlayer1Answered && game.hasPlayer2Answered) {
+      await this.progressToNextQuestion(game, io);
     }
-
+  
     await game.save();
-    return { isCorrect, currentQuestion: game.currentQuestion };
   }
-
-  static async handlePlayerLeave(gameId: string, playerId: string) {
-    const game = await GameModel.findById(gameId);
-    if (!game) throw new HttpException(400, 'Game not found');
-
-    if (game.player1Id === playerId || game.player2Id === playerId) {
+  
+  private async progressToNextQuestion(game: any, io: Server) {
+    if (game.currentQuestion + 1 >= game.questions.length) {
       game.gameState = GameState.Finished;
+  
+      let winnerId: string | null = null;
+      if (game.player1Score > game.player2Score) {
+        winnerId = game.player1Id;
+      } else if (game.player2Score > game.player1Score) {
+        winnerId = game.player2Id;
+      } else {
+        winnerId =
+          game.lastAnsweredBy === 1 ? game.player1Id : game.player2Id;
+      }
+  
       await game.save();
-      return { gameEnded: true, winner: game.player1Id === playerId ? 'Player 2' : 'Player 1' };
+  
+      const winnerSocket = io.sockets.sockets.get(
+        winnerId === game.player1Id ? game.player1SocketId : game.player2SocketId
+      );
+  
+      const loserSocket = io.sockets.sockets.get(
+        winnerId === game.player1Id ? game.player2SocketId : game.player1SocketId
+      );
+  
+      if (winnerSocket) {
+        winnerSocket.emit('game:end', {
+          winner: "Winner",
+          reason: 'Game finished',
+        });
+      }
+  
+      if (loserSocket) {
+        loserSocket.emit('game:end', {
+          winner: "Loser",
+          reason: 'Game finished',
+        });
+      }
+      return;
     }
-
-    throw new HttpException(400, 'Player not found in the game');
+  
+    game.currentQuestion++;
+    game.hasPlayer1Answered = false;
+    game.hasPlayer2Answered = false;
+  
+    await this.sendQuestion(game, io);
   }
+  
 }
