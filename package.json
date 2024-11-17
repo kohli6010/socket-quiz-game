@@ -38,6 +38,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.10.0",
     "mongoose": "^8.8.1",
+    "redis": "^4.7.0",
     "reflect-metadata": "^0.2.2",
     "typedi": "^0.10.0"
   }
