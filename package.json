@@ -6,6 +6,7 @@
     "start": "node dist/main.js",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/main.ts",
     "build": "tsc",
+    "prod": "tsc && node dist/main.js",
     "clean": "rm -rf dist",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
