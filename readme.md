@@ -63,3 +63,11 @@ after this an event **question:send** is emitted from the server with the questi
 to submit the answers an event from the client side **answer:submit** with the required payload needs to be sent (payload = {gameId: string, answer: string})
 
 Once the game is finished an event will be emitted from the server **game:end** stating game is ended with the result whether user won it or not.
+
+![alt text] (https://ibb.co/89CP31t)
+![alt text] (https://ibb.co/WfRZgv0)
+![alt text] (https://ibb.co/ZxvHXC4)
+![alt text] (https://ibb.co/zNjPfzf)
+![alt text] (https://ibb.co/Gpvg2Pq)
+![alt text] (https://ibb.co/JWTY6gZ)
+![alt text] (https://ibb.co/0q5bTV9)
